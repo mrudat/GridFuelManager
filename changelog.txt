@@ -1,0 +1,23 @@
+-------------------------------------------------------------------------------
+Version: 0.0.3
+Date: 09. 04. 2019
+
+  Bugfixes:
+    - Populate player_index before making use of it.
+
+-------------------------------------------------------------------------------
+Version: 0.0.2
+Date: 08. 04. 2019
+
+  Bugfixes:
+    - Now scans for players when added to an existing game
+    - Check if value is assigned before using it
+
+-------------------------------------------------------------------------------
+Version: 0.0.1
+Date: 07. 04. 2019
+
+  Major Features:
+    - Initial release
+
+-------------------------------------------------------------------------------
