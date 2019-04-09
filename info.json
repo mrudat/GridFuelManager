@@ -4,7 +4,7 @@
   "title": "Grid Fuel Manager",
   "author": "Martin Rudat",
   "contact": "",
-  "homepage": "",
+  "homepage": "https://github.com/mrudat/GridFuelManager",
   "description": "Loads fuel into burner generators in equipment grids from attached storage",
   "factorio_version": "0.17",
   "dependencies": [
