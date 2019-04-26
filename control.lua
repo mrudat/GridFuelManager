@@ -790,6 +790,7 @@ function on_train_created(event)
 end
 
 function on_entity_created(entity)
+  if not entity then return end
   if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
   local grid = entity.grid
   if not grid then return end
@@ -797,6 +798,7 @@ function on_entity_created(entity)
 end
 
 function on_entity_destroyed(entity)
+  if not entity then return end
   if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
   local grid = entity.grid
   if not grid then return end
@@ -813,7 +815,9 @@ function iterate_and_filter(array, filter, func)
       array[index] = item
       array[size] = nil
       size = size - 1
+      if size == 0 then return end
     end
+    if not item then return end
     func(item)
     index = index - 1
   end
