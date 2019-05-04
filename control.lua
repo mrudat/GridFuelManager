@@ -935,7 +935,7 @@ function on_player_armor_inventory_changed(event)
     }
   end
 
-  local armor_inventory = player.get_inventory(defines.inventory.player_armor)
+  local armor_inventory = player.get_inventory(defines.inventory.character_armor)
   if not armor_inventory then return end -- shouldn't happen?
 
   local armor_stack = armor_inventory[1]
@@ -1043,7 +1043,7 @@ end
 
 function maybe_register_player(player)
   local player_index = player.index
-  local armor_inventory = player.get_inventory(defines.inventory.player_armor)
+  local armor_inventory = player.get_inventory(defines.inventory.character_armor)
   if not armor_inventory then return end -- shouldn't happen?
 
   local armor_stack = armor_inventory[1]

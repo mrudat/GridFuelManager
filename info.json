@@ -1,6 +1,6 @@
 {
   "name": "GridFuelManager",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "title": "Grid Fuel Manager",
   "author": "Martin Rudat",
   "contact": "",
@@ -8,7 +8,7 @@
   "description": "Loads fuel into burner generators in equipment grids from attached storage",
   "factorio_version": "0.17",
   "dependencies": [
-    "base >= 0.17.0",
+    "base >= 0.17.35",
     "stdlib >= 0.0.1"
   ]
 }
