@@ -15,12 +15,13 @@ VERSION_STRING := $(shell cat info.json|jq -r .version)
 OUTPUT_NAME := $(PACKAGE_NAME)_$(VERSION_STRING)
 OUTPUT_DIR := build/$(OUTPUT_NAME)
 
-PKG_COPY := $(wildcard *.md)
+PKG_COPY := $(shell find . -iname '*.cfg' -type f -not -path "./build/*")
+PKG_COPY += $(shell find . -iname '*.png' -type f -not -path "./build/*")
 
 SED_FILES := $(shell find . -iname '*.json' -type f -not -path "./build/*")
 SED_FILES += $(shell find . -iname '*.lua' -type f -not -path "./build/*")
+SED_FILES += $(shell find . -iname '*.md' -type f -not -path "./build/*")
 SED_FILES += $(shell find . -iname 'changelog.txt' -type f -not -path "./build/*")
-SED_FILES += $(shell find . -iname '*.png' -type f -not -path "./build/*")
 
 OUT_FILES := $(SED_FILES:%=$(OUTPUT_DIR)/%)
 
@@ -32,17 +33,11 @@ all: clean verify package install_mod
 
 release: clean verify package install_mod tag
 
-package-copy: $(PKG_DIRS) $(PKG_FILES)
+package-copy:
 	mkdir -p $(OUTPUT_DIR)
-	if [ -d graphics ] ; then \
-		cp -r graphics build/graphics ; \
-	fi
-	if [ -d locale ] ; then \
-		cp -r locale build/locale ; \
-	fi
-ifneq ($(PKG_COPY),)
-	cp -r $(PKG_COPY) build/$(OUTPUT_NAME)
-endif
+	for a in $(PKG_COPY) ; do \
+		cp --parents $$a $(OUTPUT_DIR) ; \
+	done
 
 $(OUTPUT_DIR)/%.lua: %.lua
 	@mkdir -p $(@D)

@@ -1,6 +1,15 @@
-PriorityQueue = require("priority-queue")
-memoize = require("__stdlib__/stdlib/vendor/memoize")
-Table = require("__stdlib__/stdlib/utils/table")
+local PriorityQueue = require("priority-queue")
+local memoize = require("__stdlib__/stdlib/vendor/memoize")
+local Table = require("__stdlib__/stdlib/utils/table")
+local version = require("__stdlib__/stdlib/vendor/version")
+
+local factorio_version = version(script.active_mods["base"])
+
+local SCRIPT_RAISED_HAS_FILTER = false
+
+if factorio_version >= version("0.18.27") then
+  SCRIPT_RAISED_HAS_FILTER = true
+end
 
 local VEHICLE_ENTITY_TYPES = {
   "car",
@@ -12,62 +21,42 @@ local VEHICLE_ENTITY_TYPES = {
 
 local VEHICLE_ENTITY_TYPES_MAP = Table.array_to_dictionary(VEHICLE_ENTITY_TYPES)
 
---[[
-local ROLLING_STOCK_ENTITY_TYPES = {
-  "artillery-wagon",
-  "cargo-wagon",
-  "fluid-wagon",
-  "locomotive"
-}
-]]
-
 -- aliases to global.<name>
 
-local Vehicles
+local Vehicles -- with an equipment grid with a burner generator
 
-local Trains
+local Trains -- with an equipment grid with a burner generator
 
-local Players
+local Players -- wearing armor with an equipment grid with a burner generator.
 
-local Queue
+local Queue -- in ascending order of next_tick
 
 --- functions start here
 
-function build_fuel_category_to_items_map()
-  local items_in_fuel_category = {}
-  for _, item_prototype in pairs(game.item_prototypes) do
-    local fuel_category = item_prototype.fuel_category
-    if not fuel_category then goto next_item end
-    if not items_in_fuel_category[fuel_category] then
-      items_in_fuel_category[fuel_category] = {}
+local items_in_fuel_category
+function _items_in_fuel_category(fuel_category)
+  local prototypes = game.get_filtered_item_prototypes{
+    {
+      filter = "fuel-category",
+      ["fuel-category"] = fuel_category
+    }
+  }
+  local item_data = {}
+  for _, item_prototype in pairs(prototypes) do
+    item_data[#item_data + 1] = {
+      item_name = item_prototype.name,
+      fuel_value = item_prototype.fuel_value,
+      stack_fuel_value = item_prototype.fuel_value * item_prototype.stack_size,
+      emissions_multiplier = item_prototype.fuel_emissions_multiplier
+    }
+  end
+  table.sort(
+    item_data,
+    function(a,b)
+      return a.stack_fuel_value > b.stack_fuel_value
     end
-    table.insert(
-      items_in_fuel_category[fuel_category],
-      {
-        item_name = item_prototype.name,
-        fuel_value = item_prototype.fuel_value,
-        stack_fuel_value = item_prototype.fuel_value * item_prototype.stack_size,
-        emissions_multiplier = item_prototype.fuel_emissions_multiplier
-      }
-    )
-    ::next_item::
-  end
-  for fuel_category, data in pairs(items_in_fuel_category) do
-    table.sort(
-      data,
-      function(a,b)
-        return a.stack_fuel_value > b.stack_fuel_value
-      end
-    )
-  end
-  return items_in_fuel_category
-end
-
-function items_in_fuel_category(fuel_category)
-  if not global._items_in_fuel_category then
-    global._items_in_fuel_category = build_fuel_category_to_items_map()
-  end
-  return global._items_in_fuel_category[fuel_category]
+  )
+  return item_data
 end
 
 items_in_fuel_categories = function(fuel_categories) end
@@ -75,13 +64,14 @@ function _items_in_fuel_categories(fuel_categories)
   local merged
   for fuel_category in pairs(fuel_categories) do
     local data = items_in_fuel_category(fuel_category)
+    -- merge sort on stack_fuel_value
     if merged then
       local temp = merged
       merged = {}
       local i = 1
       local j = 1
 
-      while data[i] and data[j] do
+      while data[i] and temp[j] do
         if data[i].stack_fuel_value > temp[j].stack_fuel_value then
           merged[#merged + 1] = data[i]
           i = i + 1
@@ -107,14 +97,18 @@ function _items_in_fuel_categories(fuel_categories)
   return merged
 end
 
-function find_burner_generators(grid)
+function find_burner_generators(grid, complain)
   local generators = {}
   for _,equipment in ipairs(grid.equipment) do
     local burner = equipment.burner
     if not burner then goto next_equipment end
 
     local inventory = burner.inventory
-    if not inventory.valid then goto next_equipment end -- shouldn't happen?
+    if not inventory.valid then
+      -- shouldn't happen?
+       complain({"GridGuelManager-message.generator-no-inventory", equipment.prototype.localised_name})
+      goto next_equipment
+    end
 
     local burnt_result_inventory = burner.burnt_result_inventory
     if not burnt_result_inventory.valid then
@@ -122,16 +116,19 @@ function find_burner_generators(grid)
     end
 
     local power = equipment.generator_power
-    if power == 0 then goto next_equipment end
+    if power == 0 then
+      complain({"GridGuelManager-message.powerless-generator", equipment.prototype.localised_name})
+      goto next_equipment
+    end
 
-    table.insert(generators,{
+    generators[#generators + 1] = {
       equipment = equipment,
-      power = power,
+      ipower = 1 / power,
       burner = burner,
       inventory = inventory,
       burnt_result_inventory = burnt_result_inventory,
       fuel_categories = burner.fuel_categories
-    })
+    }
     ::next_equipment::
   end
   return generators
@@ -173,21 +170,30 @@ function handle_train(data)
     end
     local vehicle_generators = vehicle_data.generators
     if vehicle_generators then
-      iterate_and_filter(
-        vehicle_generators,
-        function(generator)
-          if not generator.equipment.valid then return false end
-          if not generator.burner.valid then return false end
-          if not generator.inventory.valid then return false end
-          if generator.burnt_result_inventory then
-            if not generator.burnt_result_inventory.valid then return false end
-          end
-          return true
-        end,
-        function(generator)
-          table.insert(generators,generator)
+      for i=#vehicle_generators,1,-1 do
+        local generator=vehicle_generators[i]
+        local remove = false
+        if not generator.equipment.valid then
+          remove = true
         end
-      )
+        if not generator.burner.valid then
+          remove = true
+        end
+        if not inventory.valid then
+          remove = true
+        end
+        if generator.burnt_result_inventory then
+          if not generator.burnt_result_inventory.valid then
+            remove = true
+          end
+        end
+        if not remove then
+          generators[#generators + 1] = generator
+        else
+          vehicle_generators[i] = vehicle_generators[#vehicle_generators]
+          vehicle_generators[#vehicle_generators] = nil
+        end
+      end
     end
 
     ::next_vehicle::
@@ -205,8 +211,6 @@ function handle_train(data)
   local min_remaining_time = nil
 
   for _,generator in pairs(generators) do
-    local power = generator.power
-
     local inventory = generator.inventory
 
     inventory.sort_and_merge()
@@ -249,7 +253,7 @@ function handle_train(data)
       remaining_energy = remaining_energy + energy
     end
 
-    local remaining_time = remaining_energy / power
+    local remaining_time = remaining_energy * generator.ipower
     if not min_remaining_time then
       min_remaining_time = remaining_time
     else
@@ -328,22 +332,30 @@ function handle_vehicle(data)
 
   local min_remaining_time = nil
 
-  iterate_and_filter(
-    generators,
-    function(generator)
-      if not generator.equipment.valid then return false end
-      if not generator.burner.valid then return false end
-      if not generator.inventory.valid then return false end
-      if generator.burnt_result_inventory then
-        if not generator.burnt_result_inventory.valid then return false end
+  for i=#generators,1,-1 do
+    local generator=generators[i]
+    local remove = false
+    do
+      if not generator.equipment.valid then
+        remove = true
+        goto next
       end
-      return true
-    end,
-    function(generator)
-      local power = generator.power
-      --local burner = generator.burner
+      if not generator.burner.valid then
+        remove = true
+        goto next
+      end
 
       local inventory = generator.inventory
+      if not inventory.valid then
+        remove = true
+        goto next
+      end
+      if generator.burnt_result_inventory then
+        if not generator.burnt_result_inventory.valid then
+          remove = true
+          goto next
+        end
+      end
 
       -- sort the inventory to free up space
       inventory.sort_and_merge()
@@ -400,7 +412,7 @@ function handle_vehicle(data)
         remaining_energy = remaining_energy + energy
       end
 
-      local remaining_time = remaining_energy / power
+      local remaining_time = remaining_energy / generator.ipower
       if not min_remaining_time then
         min_remaining_time = remaining_time
       else
@@ -409,13 +421,18 @@ function handle_vehicle(data)
         end
       end
     end
-  )
+    ::next::
+    if remove then
+      generators[i] = generators[#generators]
+      generators[#generators] = nil
+    end
+  end
 
   -- compact the inventory to try and free up some space.
   vehicle_inventory.sort_and_merge()
 
   -- evict the burnt result to the main inventory, so it can be taken away.
-  for _,generator in pairs(generators) do
+  for _,generator in ipairs(generators) do
     local burnt_result_inventory = generator.burnt_result_inventory
     if burnt_result_inventory then
       local contents = burnt_result_inventory.get_contents()
@@ -469,22 +486,30 @@ function handle_player(data)
 
   local min_remaining_time = nil
 
-  iterate_and_filter(
-    generators,
-    function(generator)
-      if not generator.equipment.valid then return false end
-      if not generator.burner.valid then return false end
-      if not generator.inventory.valid then return false end
-      if generator.burnt_result_inventory then
-        if not generator.burnt_result_inventory.valid then return false end
+  for i=#generators,1,-1 do
+    local generator=generators[i]
+    local remove = false
+    do
+      if not generator.equipment.valid then
+        remove = true
+        goto next
       end
-      return true
-    end,
-    function(generator)
-      local power = generator.power
-      --local burner = generator.burner
+      if not generator.burner.valid then
+        remove = true
+        goto next
+      end
 
       local inventory = generator.inventory
+      if not inventory.valid then
+        remove = true
+        goto next
+      end
+      if generator.burnt_result_inventory then
+        if not generator.burnt_result_inventory.valid then
+          remove = true
+          goto next
+        end
+      end
 
       -- sort the inventory to free up space
       inventory.sort_and_merge()
@@ -529,7 +554,7 @@ function handle_player(data)
         remaining_energy = remaining_energy + energy
       end
 
-      local remaining_time = remaining_energy / power
+      local remaining_time = remaining_energy / generator.ipower
       if not min_remaining_time then
         min_remaining_time = remaining_time
       else
@@ -538,7 +563,12 @@ function handle_player(data)
         end
       end
     end
-  )
+    ::next::
+    if remove then
+      generators[i] = generators[#generators]
+      generators[#generators] = nil
+    end
+  end
 
   -- evict the burnt result to the main inventory, so it can be taken away.
   for _,generator in pairs(generators) do
@@ -575,39 +605,19 @@ function handle_thing(data)
 end
 
 function on_tick(event)
-  local tick = event.tick
   local item = Queue:peek()
-  -- TODO max work per tick?
-  while item and item.next_tick <= tick do
-    Queue:pop()
+  if not item then return end
 
-    handle_thing(item)
+  local tick = event.tick
+  if item.next_tick > tick then return end
 
-    item = Queue:peek()
-  end
+  Queue:pop()
 
-  schedule_queue_callback()
+  handle_thing(item)
 end
 
 function enqueue(data)
   Queue:put(data, data.next_tick)
-end
-
-function schedule_queue_callback()
-  script.on_nth_tick(nil)
-
-  if Queue:empty() then
-    return
-  end
-
-  local next_item = Queue:peek()
-  local next_tick = next_item.next_tick
-  local ticks_left = next_tick - game.tick
-  if ticks_left > 0 then
-    script.on_nth_tick(ticks_left, on_tick)
-  else
-    script.on_nth_tick(1, on_tick)
-  end
 end
 
 function register_vehicle_with_equipment_grid(entity, grid)
@@ -620,7 +630,13 @@ function register_vehicle_with_equipment_grid(entity, grid)
     grid = grid
   }
 
-  local generators = find_burner_generators(grid)
+  local generators = find_burner_generators(
+    grid,
+    function(message)
+      local force = entity.force
+      force.print(message)
+    end
+  )
 
   vehicle_data.generators = generators
 
@@ -664,7 +680,6 @@ function register_vehicle_with_equipment_grid(entity, grid)
       vehicle_data.queue_data = queue_data
       enqueue(queue_data)
     end
-    schedule_queue_callback()
   end
 
   if vehicle_type == "car" then
@@ -783,44 +798,20 @@ function on_train_created(event)
       train_data.queue_data = queue_data
 
       enqueue(queue_data)
-
-      schedule_queue_callback()
     end
   end
 end
 
 function on_entity_created(entity)
-  if not entity then return end
-  if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
   local grid = entity.grid
   if not grid then return end
   register_vehicle_with_equipment_grid(entity, grid)
 end
 
 function on_entity_destroyed(entity)
-  if not entity then return end
-  if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
   local grid = entity.grid
   if not grid then return end
   deregister_vehicle_with_equipment_grid(entity, grid)
-end
-
-function iterate_and_filter(array, filter, func)
-  local size = #array
-  local index = size
-  while index > 0 do
-    local item = array[index]
-    while not filter(item) do
-      item = array[size]
-      array[index] = item
-      array[size] = nil
-      size = size - 1
-      if size == 0 then return end
-    end
-    if not item then return end
-    func(item)
-    index = index - 1
-  end
 end
 
 function on_player_placed_equipment(event)
@@ -857,7 +848,7 @@ function on_player_placed_equipment(event)
       thing_data = player_data
       generators = player_data.generators
     else
-      log("?!")
+      player.print({"GridFuelManager-message.where-did-you-put-that", equipment.prototype.localised_name})
     end
   else
     if entity.grid == grid then
@@ -880,7 +871,7 @@ function on_player_placed_equipment(event)
   end
 
   if ((generators == nil) or (not thing_data)) then
-    log("Unable to determine where equipment was placed.")
+    player.print({"GridFuelManager-message.where-did-you-put-that", equipment.prototype.localised_name})
     -- TODO do an exhaustive search?
     return
   end
@@ -890,14 +881,20 @@ function on_player_placed_equipment(event)
     burnt_result_inventory = nil
   end
 
-  table.insert(generators,{
+  local power = equipment.generator_power
+  if power == 0 then
+    player.print({"GridFuelManager-message.powerless-generator"})
+    return
+  end
+
+  generators[#generators + 1] = {
     equipment = equipment,
-    power = equipment.generator_power,
+    ipower = 1 / power,
     burner = burner,
     inventory = burner.inventory,
     burnt_result_inventory = burnt_result_inventory,
     fuel_categories = burner.fuel_categories,
-  })
+  }
 
   local old_queue_data = thing_data.queue_data
   if old_queue_data then
@@ -910,7 +907,6 @@ function on_player_placed_equipment(event)
   thing_data.queue_data = queue_data
 
   enqueue(queue_data)
-  schedule_queue_callback()
 end
 
 function on_player_armor_inventory_changed(event)
@@ -948,7 +944,12 @@ function on_player_armor_inventory_changed(event)
 
   player_data.grid = grid
 
-  local generators = find_burner_generators(grid)
+  local generators = find_burner_generators(
+    grid,
+    function (message)
+      player.print(message)
+    end
+  )
   player_data.generators = generators
 
   if next(generators) then
@@ -959,7 +960,6 @@ function on_player_armor_inventory_changed(event)
     }
     player_data.queue_data = queue_data
     enqueue(queue_data)
-    schedule_queue_callback()
   end
 
   Players[player_index] = player_data
@@ -981,8 +981,6 @@ function on_player_joined_game(event)
   player_data.queue_data = queue_data
 
   enqueue(queue_data)
-
-  schedule_queue_callback()
 end
 
 function on_player_left_game(event)
@@ -1030,7 +1028,19 @@ function on_player_removed(event)
 end
 
 function find_vehicles()
-  -- find all planes, trains and automobiles
+  -- find all planes, trains and automobiles that have equipment grids.
+  --[[ -- TODO when LuaEntityProtype links to LuaEquipmentGridPrototype
+  local victim_names = {}
+  for entity_prototype_name,entity_prototype in pairs(game.get_filtered_entity_prototypes{
+    { filter = "rolling-stock" },
+    { filter = "vehicle" }
+  }) do
+    if entity_prototype.grid then
+      victim_names[#victim_names + 1] = entity_prototype_name
+    end
+  end
+  ]]
+
   for _,surface in pairs(game.surfaces) do
     for _,vehicle in pairs(surface.find_entities_filtered{type=VEHICLE_ENTITY_TYPES}) do
       local grid = vehicle.grid
@@ -1059,7 +1069,12 @@ function maybe_register_player(player)
     grid = grid,
   }
 
-  local generators = find_burner_generators(grid)
+  local generators = find_burner_generators(
+    grid,
+    function (message)
+      player.print(message)
+    end
+  )
   player_data.generators = generators
 
   if next(generators) then
@@ -1070,7 +1085,6 @@ function maybe_register_player(player)
     }
     player_data.queue_data = queue_data
     enqueue(queue_data)
-    schedule_queue_callback()
   end
 
   Players[player_index] = player_data
@@ -1108,43 +1122,94 @@ function on_load()
   Players  = global.Players
   Queue    = PriorityQueue(global.Queue)
 
+  items_in_fuel_category = memoize(_items_in_fuel_category, global._items_in_fuel_category)
   items_in_fuel_categories = memoize(_items_in_fuel_categories, global._items_in_fuel_categories)
-
-  --schedule_queue_callback()
-  script.on_nth_tick(1,on_tick)
 end
 
 -- register events
 
-script.on_event(
+local vehicle_filter = {
+  { filter="type", type = "rolling-stock" },
+  { filter="type", type = "vehicle" }
+}
+
+local function register_events(events, handler, filters)
+  for i,event in ipairs(events) do
+    script.on_event(event, handler, filters)
+  end
+end
+
+
+register_events(
   {
     defines.events.on_built_entity,
     defines.events.on_robot_built_entity,
   },
   function(event)
     on_entity_created(event.created_entity)
-  end
-)
-script.on_event(
-  {
-    defines.events.script_raised_built,
-  },
-  function(event)
-    on_entity_created(event.entity)
-  end
+  end,
+  vehicle_filter
 )
 
-script.on_event(
+local a_script_created_it = {
+  defines.events.script_raised_built,
+  defines.events.script_raised_revive,
+}
+
+if SCRIPT_RAISED_HAS_FILTER then
+  register_events(
+    a_script_created_it,
+    function(event)
+      local entity = event.entity
+      on_entity_created(entity)
+    end,
+    vehicle_filter
+  )
+else
+  register_events(
+    a_script_created_it,
+    function(event)
+      local entity = event.entity
+      if not entity then return end
+      if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
+      on_entity_created(entity)
+    end
+  )
+end
+
+register_events(
   {
     defines.events.on_entity_died,
     defines.events.on_player_mined_entity,
     defines.events.on_robot_mined_entity,
-    defines.events.script_raised_destroy,
   },
   function(event)
     on_entity_destroyed(event.entity)
-  end
+  end,
+  vehicle_filter
 )
+
+if SCRIPT_RAISED_HAS_FILTER then
+  script.on_event(
+    defines.events.script_raised_destroy,
+    function(event)
+      local entity = event.entity
+      on_entity_destroyed(entity)
+    end,
+    vehicle_filter
+  )
+else
+  script.on_event(
+    defines.events.script_raised_destroy,
+    function(event)
+      local entity = event.entity
+      if not entity then return end
+      if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
+      on_entity_destroyed(entity)
+    end
+  )
+end
+
 
 script.on_event(defines.events.on_train_created, on_train_created)
 
@@ -1157,6 +1222,8 @@ script.on_event(defines.events.on_player_joined_game, on_player_joined_game)
 script.on_event(defines.events.on_player_left_game, on_player_left_game)
 script.on_event(defines.events.on_player_died, on_player_died)
 script.on_event(defines.events.on_player_removed, on_player_removed)
+
+script.on_event(defines.events.on_tick, on_tick)
 
 script.on_init(
   on_init
