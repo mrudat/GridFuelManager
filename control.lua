@@ -1,15 +1,5 @@
 local PriorityQueue = require("priority-queue")
 local memoize = require("__stdlib__/stdlib/vendor/memoize")
-local Table = require("__stdlib__/stdlib/utils/table")
-local version = require("__stdlib__/stdlib/vendor/version")
-
-local factorio_version = version(script.active_mods["base"])
-
-local SCRIPT_RAISED_HAS_FILTER = false
-
-if factorio_version >= version("0.18.27") then
-  SCRIPT_RAISED_HAS_FILTER = true
-end
 
 local VEHICLE_ENTITY_TYPES = {
   "car",
@@ -19,7 +9,9 @@ local VEHICLE_ENTITY_TYPES = {
   "locomotive"
 }
 
-local VEHICLE_ENTITY_TYPES_MAP = Table.array_to_dictionary(VEHICLE_ENTITY_TYPES)
+local VEHICLE_ENTITY_NAMES
+
+local VEHICLE_ENTITY_NAMES_MAP
 
 -- aliases to global.<name>
 
@@ -33,8 +25,12 @@ local Queue -- in ascending order of next_tick
 
 --- functions start here
 
+local function enqueue(data)
+  Queue:put(data, data.next_tick)
+end
+
 local items_in_fuel_category
-function _items_in_fuel_category(fuel_category)
+local function _items_in_fuel_category(fuel_category)
   local prototypes = game.get_filtered_item_prototypes{
     {
       filter = "fuel-category",
@@ -59,8 +55,8 @@ function _items_in_fuel_category(fuel_category)
   return item_data
 end
 
-items_in_fuel_categories = function(fuel_categories) end
-function _items_in_fuel_categories(fuel_categories)
+local items_in_fuel_categories = function(_) end
+local function _items_in_fuel_categories(fuel_categories)
   local merged
   for fuel_category in pairs(fuel_categories) do
     local data = items_in_fuel_category(fuel_category)
@@ -97,7 +93,7 @@ function _items_in_fuel_categories(fuel_categories)
   return merged
 end
 
-function find_burner_generators(grid, complain)
+local function find_burner_generators(grid, complain)
   local generators = {}
   for _,equipment in ipairs(grid.equipment) do
     local burner = equipment.burner
@@ -106,7 +102,7 @@ function find_burner_generators(grid, complain)
     local inventory = burner.inventory
     if not inventory.valid then
       -- shouldn't happen?
-       complain({"GridGuelManager-message.generator-no-inventory", equipment.prototype.localised_name})
+      complain({"GridGuelManager-message.generator-no-inventory", equipment.prototype.localised_name})
       goto next_equipment
     end
 
@@ -134,7 +130,7 @@ function find_burner_generators(grid, complain)
   return generators
 end
 
-function handle_train(data)
+local function handle_train(data)
   local train_id = data.train_id
 
   local train_data = Trains[train_id]
@@ -147,6 +143,8 @@ function handle_train(data)
   end
 
   local generators = {}
+
+  local failed
 
   for unit_number,_ in pairs(train_data.units) do
     local vehicle_data = Vehicles[unit_number]
@@ -179,7 +177,7 @@ function handle_train(data)
         if not generator.burner.valid then
           remove = true
         end
-        if not inventory.valid then
+        if not generator.inventory.valid then
           remove = true
         end
         if generator.burnt_result_inventory then
@@ -272,7 +270,6 @@ function handle_train(data)
         local moved = train.insert{name = name, count = count}
         if moved > 0 then
           burnt_result_inventory.remove{name = name, count = moved}
-          count = count - moved
         end
       end
     end
@@ -286,7 +283,7 @@ function handle_train(data)
   end
 end
 
-function handle_vehicle(data)
+local function handle_vehicle(data)
   local unit_number = data.unit_number
 
   local vehicle_data = Vehicles[unit_number]
@@ -464,7 +461,7 @@ function handle_vehicle(data)
   end
 end
 
-function handle_player(data)
+local function handle_player(data)
   local player_index = data.player_index
 
   local player_data = Players[player_index]
@@ -593,7 +590,7 @@ function handle_player(data)
   end
 end
 
-function handle_thing(data)
+local function handle_thing(data)
   local type = data.type
   if type == "train" then
     handle_train(data)
@@ -604,7 +601,7 @@ function handle_thing(data)
   end
 end
 
-function on_tick(event)
+local function on_tick(event)
   local item = Queue:peek()
   if not item then return end
 
@@ -616,11 +613,7 @@ function on_tick(event)
   handle_thing(item)
 end
 
-function enqueue(data)
-  Queue:put(data, data.next_tick)
-end
-
-function register_vehicle_with_equipment_grid(entity, grid)
+local function register_vehicle_with_equipment_grid(entity, grid)
   local unit_number = entity.unit_number
 
   local vehicle_type = entity.type
@@ -691,7 +684,7 @@ function register_vehicle_with_equipment_grid(entity, grid)
   Vehicles[unit_number] = vehicle_data
 end
 
-function deregister_vehicle_with_equipment_grid(entity, grid)
+local function deregister_vehicle_with_equipment_grid(entity)
   local unit_number = entity.unit_number
 
   local vehicle_data = Vehicles[unit_number]
@@ -722,7 +715,7 @@ function deregister_vehicle_with_equipment_grid(entity, grid)
   end
 end
 
-function on_train_created(event)
+local function on_train_created(event)
   local train = event.train
 
   local train_id = train.id
@@ -802,19 +795,19 @@ function on_train_created(event)
   end
 end
 
-function on_entity_created(entity)
+local function on_entity_created(entity)
   local grid = entity.grid
   if not grid then return end
   register_vehicle_with_equipment_grid(entity, grid)
 end
 
-function on_entity_destroyed(entity)
+local function on_entity_destroyed(entity)
   local grid = entity.grid
   if not grid then return end
   deregister_vehicle_with_equipment_grid(entity, grid)
 end
 
-function on_player_placed_equipment(event)
+local function on_player_placed_equipment(event)
   local equipment = event.equipment
 
   local burner = equipment.burner
@@ -840,7 +833,6 @@ function on_player_placed_equipment(event)
   }
 
   local entity = player.opened
-  local queue_type
   if entity == grid then -- player.opened == grid for power armor, despite what the doco says
     if player_data.grid == grid then
       queue_data.type = 'player'
@@ -852,9 +844,13 @@ function on_player_placed_equipment(event)
     end
   else
     if entity.grid == grid then
-      if VEHICLE_ENTITY_TYPES_MAP[entity.type] then
+      if VEHICLE_ENTITY_NAMES_MAP[entity.name] then
         local unit_number = entity.unit_number
         local vehicle_data = Vehicles[unit_number]
+        if not vehicle_data then
+          register_vehicle_with_equipment_grid(entity, grid)
+          vehicle_data = Vehicles[unit_number]
+        end
         generators = vehicle_data.generators
         local train_id = vehicle_data.train_id
         if train_id then
@@ -909,7 +905,7 @@ function on_player_placed_equipment(event)
   enqueue(queue_data)
 end
 
-function on_player_armor_inventory_changed(event)
+local function on_player_armor_inventory_changed(event)
   local player_index = event.player_index
 
   local player_data = Players[player_index]
@@ -953,7 +949,7 @@ function on_player_armor_inventory_changed(event)
   player_data.generators = generators
 
   if next(generators) then
-    queue_data = {
+    local queue_data = {
       type = "player",
       player_index = player_index,
       next_tick = 0,
@@ -965,7 +961,7 @@ function on_player_armor_inventory_changed(event)
   Players[player_index] = player_data
 end
 
-function on_player_joined_game(event)
+local function on_player_joined_game(event)
   local player_index = event.player_index
 
   local player_data = Players[player_index]
@@ -973,7 +969,7 @@ function on_player_joined_game(event)
 
   if not next(player_data.generators) then return end
 
-  queue_data = {
+  local queue_data = {
     type = "player",
     player_index = player_index,
     next_tick = 0
@@ -983,7 +979,7 @@ function on_player_joined_game(event)
   enqueue(queue_data)
 end
 
-function on_player_left_game(event)
+local function on_player_left_game(event)
   local player_index = event.player_index
 
   local player_data = Players[player_index]
@@ -999,7 +995,7 @@ function on_player_left_game(event)
   player_data.queue_data = nil
 end
 
-function on_player_died(event)
+local function on_player_died(event)
   local player_index = event.player_index
 
   local player_data = Players[player_index]
@@ -1013,7 +1009,7 @@ function on_player_died(event)
   Players[player_index] = nil
 end
 
-function on_player_removed(event)
+local function on_player_removed(event)
   local player_index = event.player_index
 
   local player_data = Players[player_index]
@@ -1027,22 +1023,34 @@ function on_player_removed(event)
   Players[player_index] = nil
 end
 
-function find_vehicles()
-  -- find all planes, trains and automobiles that have equipment grids.
-  --[[ -- TODO when LuaEntityProtype links to LuaEquipmentGridPrototype
-  local victim_names = {}
-  for entity_prototype_name,entity_prototype in pairs(game.get_filtered_entity_prototypes{
-    { filter = "rolling-stock" },
-    { filter = "vehicle" }
-  }) do
-    if entity_prototype.grid then
-      victim_names[#victim_names + 1] = entity_prototype_name
+local function index_vehicle_prototypes_with_grids()
+  local vehicles_filter = {}
+
+  for i=1,#VEHICLE_ENTITY_TYPES do
+    vehicles_filter[#vehicles_filter+1] = {
+      filter = "type",
+      type = VEHICLE_ENTITY_TYPES[i]
+    }
+  end
+
+  local vehicle_names = {}
+  local vehicle_names_map = {}
+
+  for entity_prototype_name,entity_prototype in pairs(game.get_filtered_entity_prototypes(vehicles_filter)) do
+    if entity_prototype.grid_prototype then
+      vehicle_names[#vehicle_names + 1] = entity_prototype_name
+      vehicle_names_map[entity_prototype_name] = true
     end
   end
-  ]]
 
+  global.VEHICLE_ENTITY_NAMES = vehicle_names
+  global.VEHICLE_ENTITY_NAMES_MAP = vehicle_names_map
+end
+
+local function find_vehicles()
+  -- find all planes, trains and automobiles that have equipment grids.
   for _,surface in pairs(game.surfaces) do
-    for _,vehicle in pairs(surface.find_entities_filtered{type=VEHICLE_ENTITY_TYPES}) do
+    for _,vehicle in pairs(surface.find_entities_filtered{name=VEHICLE_ENTITY_NAMES}) do
       local grid = vehicle.grid
       if grid then
         register_vehicle_with_equipment_grid(vehicle, grid)
@@ -1051,7 +1059,7 @@ function find_vehicles()
   end
 end
 
-function maybe_register_player(player)
+local function maybe_register_player(player)
   local player_index = player.index
   local armor_inventory = player.get_inventory(defines.inventory.character_armor)
   if not armor_inventory then return end -- shouldn't happen?
@@ -1078,7 +1086,7 @@ function maybe_register_player(player)
   player_data.generators = generators
 
   if next(generators) then
-    queue_data = {
+    local queue_data = {
       type = "player",
       player_index = player_index,
       next_tick = 0,
@@ -1090,14 +1098,27 @@ function maybe_register_player(player)
   Players[player_index] = player_data
 end
 
-function find_players()
+local function find_players()
   -- find all players wearing armor with a grid.
   for _,player in pairs(game.players) do
     maybe_register_player(player)
   end
 end
 
-function on_init()
+local function on_load()
+  Vehicles = global.Vehicles
+  Trains   = global.Trains
+  Players  = global.Players
+  Queue    = PriorityQueue(global.Queue)
+
+  items_in_fuel_category = memoize(_items_in_fuel_category, global._items_in_fuel_category)
+  items_in_fuel_categories = memoize(_items_in_fuel_categories, global._items_in_fuel_categories)
+
+  VEHICLE_ENTITY_NAMES = global.VEHICLE_ENTITY_NAMES
+  VEHICLE_ENTITY_NAMES_MAP = global.VEHICLE_ENTITY_NAMES_MAP
+end
+
+local function on_init()
   global.Vehicles = {}
   global.Trains   = {}
   global.Players  = {}
@@ -1106,35 +1127,27 @@ function on_init()
   global._items_in_fuel_category = nil
   global._items_in_fuel_categories = nil
 
+  index_vehicle_prototypes_with_grids()
+
   on_load()
 
   find_vehicles()
   find_players()
 end
 
-function on_configuration_changed(data)
+local function on_configuration_changed(_)
   on_init()
-end
-
-function on_load()
-  Vehicles = global.Vehicles
-  Trains   = global.Trains
-  Players  = global.Players
-  Queue    = PriorityQueue(global.Queue)
-
-  items_in_fuel_category = memoize(_items_in_fuel_category, global._items_in_fuel_category)
-  items_in_fuel_categories = memoize(_items_in_fuel_categories, global._items_in_fuel_categories)
 end
 
 -- register events
 
 local vehicle_filter = {
   { filter="type", type = "rolling-stock" },
-  { filter="type", type = "vehicle" }
+  { filter="type", type = "car" }
 }
 
 local function register_events(events, handler, filters)
-  for i,event in ipairs(events) do
+  for _,event in ipairs(events) do
     script.on_event(event, handler, filters)
   end
 end
@@ -1156,26 +1169,14 @@ local a_script_created_it = {
   defines.events.script_raised_revive,
 }
 
-if SCRIPT_RAISED_HAS_FILTER then
-  register_events(
-    a_script_created_it,
-    function(event)
-      local entity = event.entity
-      on_entity_created(entity)
-    end,
-    vehicle_filter
-  )
-else
-  register_events(
-    a_script_created_it,
-    function(event)
-      local entity = event.entity
-      if not entity then return end
-      if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
-      on_entity_created(entity)
-    end
-  )
-end
+register_events(
+  a_script_created_it,
+  function(event)
+    local entity = event.entity
+    on_entity_created(entity)
+  end,
+  vehicle_filter
+)
 
 register_events(
   {
@@ -1189,26 +1190,14 @@ register_events(
   vehicle_filter
 )
 
-if SCRIPT_RAISED_HAS_FILTER then
-  script.on_event(
-    defines.events.script_raised_destroy,
-    function(event)
-      local entity = event.entity
-      on_entity_destroyed(entity)
-    end,
-    vehicle_filter
-  )
-else
-  script.on_event(
-    defines.events.script_raised_destroy,
-    function(event)
-      local entity = event.entity
-      if not entity then return end
-      if not VEHICLE_ENTITY_TYPES_MAP[entity.type] then return end
-      on_entity_destroyed(entity)
-    end
-  )
-end
+script.on_event(
+  defines.events.script_raised_destroy,
+  function(event)
+    local entity = event.entity
+    on_entity_destroyed(entity)
+  end,
+  vehicle_filter
+)
 
 
 script.on_event(defines.events.on_train_created, on_train_created)
